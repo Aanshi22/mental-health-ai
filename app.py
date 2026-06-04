@@ -5,6 +5,7 @@ import re
 import textwrap
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -12,15 +13,63 @@ from PIL import Image
 import PyPDF2
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
-load_dotenv()
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 def get_key(n):
-    try:    return st.secrets[n]
-    except: return os.getenv(n)
+    try:
+        value = st.secrets[n]
+        if value is not None and str(value).strip() != "":
+            return str(value).strip()
+    except Exception:
+        pass
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
-VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "").strip()
+    # Support common nested Streamlit secret structures, for example:
+    # [ollama]\nhost=...\napi_key=...\nmodel=...
+    try:
+        secret_groups = [st.secrets["ollama"], st.secrets["OLLAMA"], st.secrets["Ollama"]]
+    except Exception:
+        secret_groups = []
+
+    candidates = [n, n.lower(), n.upper()]
+    if n.startswith("OLLAMA_"):
+        short = n.replace("OLLAMA_", "", 1)
+        candidates.extend([short, short.lower(), short.upper()])
+
+    for group in secret_groups:
+        for candidate in candidates:
+            try:
+                value = group[candidate]
+                if value is not None and str(value).strip() != "":
+                    return str(value).strip()
+            except Exception:
+                continue
+
+    return os.getenv(n)
+
+def get_first_key(*names, default=""):
+    for name in names:
+        value = get_key(name)
+        if value is not None and str(value).strip() != "":
+            return str(value).strip()
+    return default
+
+IN_STREAMLIT_CLOUD = bool(os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_RUNTIME"))
+
+OLLAMA_API_KEY = get_first_key("OLLAMA_API_KEY", "OLLAMA_KEY", default="")
+OLLAMA_HOST = get_first_key("OLLAMA_HOST", "OLLAMA_BASE_URL", "OLLAMA_URL", default="http://localhost:11434")
+
+# On Streamlit Cloud, if only an API key is provided, prefer hosted Ollama automatically.
+if IN_STREAMLIT_CLOUD and OLLAMA_HOST == "http://localhost:11434" and OLLAMA_API_KEY:
+    OLLAMA_HOST = "https://api.ollama.com"
+
+if re.match(r"^https?://ollama\.com/?$", OLLAMA_HOST):
+    OLLAMA_HOST = "https://api.ollama.com"
+OLLAMA_HOST = OLLAMA_HOST.rstrip("/")
+OLLAMA_BASE_URL = OLLAMA_HOST[:-4] if OLLAMA_HOST.endswith("/api") else OLLAMA_HOST
+MODEL = get_first_key("OLLAMA_MODEL", "MODEL", default="llama3.1")
+VISION_MODEL = get_first_key("OLLAMA_VISION_MODEL", "VISION_MODEL", default="llava")
+IN_CODESPACES = bool(os.getenv("CODESPACES"))
 
 st.set_page_config(
     page_title="MindAI – Mental Health Platform",
@@ -28,6 +77,29 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+def deploy_diagnostics():
+    issues = []
+
+    if not IN_STREAMLIT_CLOUD:
+        return issues
+
+    key_value = (OLLAMA_API_KEY or "").strip()
+    if not key_value or key_value.upper().startswith("REPLACE_WITH_"):
+        issues.append(
+            "Deploy config issue: OLLAMA_API_KEY is missing in Streamlit Cloud secrets."
+        )
+
+    if "localhost" in OLLAMA_BASE_URL:
+        issues.append(
+            "Deploy config issue: OLLAMA_HOST points to localhost, which is unreachable from Streamlit Cloud. "
+            "Use a hosted Ollama URL such as https://api.ollama.com."
+        )
+
+    return issues
+
+for issue in deploy_diagnostics():
+    st.warning(issue, icon="⚠️")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GLOBAL CSS
@@ -37,6 +109,13 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 *, html, body { font-family: 'Inter', sans-serif !important; }
+
+html, body { overflow-x: hidden; }
+.stApp * { box-sizing: border-box; }
+h1, h2, h3, h4, h5, h6, p, li, span, label {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
 
 /* Hide sidebar collapse control (double-arrow) across Streamlit variants */
 [data-testid="collapsedControl"],
@@ -65,6 +144,10 @@ button[title="Open sidebar"] {
     transition: all 0.2s; display: block;
     font-size: 14px;
 }
+[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label span {
+    white-space: normal !important;
+    line-height: 1.35 !important;
+}
 [data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover {
     background: rgba(108,99,255,0.25);
     border-color: rgba(108,99,255,0.6);
@@ -86,16 +169,47 @@ button[title="Open sidebar"] {
     content:''; position:absolute; top:-60px; right:-60px;
     width:220px; height:220px; border-radius:50%;
     background: radial-gradient(circle,rgba(108,99,255,0.15) 0%,transparent 70%);
+    z-index: 0;
+    pointer-events: none;
 }
 .hero::after {
     content:''; position:absolute; bottom:-40px; left:10%;
     width:160px; height:160px; border-radius:50%;
     background: radial-gradient(circle,rgba(0,210,150,0.1) 0%,transparent 70%);
+    z-index: 0;
+    pointer-events: none;
 }
 .hero h1 { font-size:30px; font-weight:700; margin:0; color:#fff;
     background: linear-gradient(90deg,#fff,#a78bfa); -webkit-background-clip:text;
-    -webkit-text-fill-color:transparent; }
-.hero p  { margin:8px 0 0; color:rgba(232,232,248,0.7); font-size:14px; }
+    -webkit-text-fill-color:transparent;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    position: relative;
+    z-index: 1;
+}
+.hero p  {
+    margin:8px 0 0;
+    color:rgba(232,232,248,0.7);
+    font-size:14px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+    position: relative;
+    z-index: 1;
+}
+
+@media (max-width: 640px) {
+    .hero {
+        padding: 26px 18px;
+    }
+    .hero h1 {
+        font-size: 24px;
+        line-height: 1.3;
+    }
+    .hero p {
+        font-size: 13px;
+        line-height: 1.6;
+    }
+}
 
 /* ── Glass cards ── */
 .glass {
@@ -177,6 +291,9 @@ button[title="Open sidebar"] {
     color: white !important; border: none !important;
     border-radius: 10px !important; padding: 10px 28px !important;
     font-weight: 600 !important; font-size: 14px !important;
+    line-height: 1.35 !important;
+    height: auto !important;
+    white-space: normal !important;
     transition: all 0.2s !important;
 }
 .stButton > button:hover {
@@ -222,6 +339,20 @@ div[role="radiogroup"] label span { color:rgba(232,232,248,0.85) !important; }
     border: 2px dashed rgba(108,99,255,0.35) !important;
     border-radius: 12px !important;
 }
+[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] {
+    min-height: 42px !important;
+}
+[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] p,
+[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] span {
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+    position: static !important;
+}
+/* Streamlit can render duplicate text nodes in uploader buttons on some themes. */
+[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] p + p,
+[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] span + span {
+    display: none !important;
+}
 
 /* ── Slider ── */
 .stSlider > div > div > div { background: #6C63FF !important; }
@@ -243,13 +374,39 @@ div[role="radiogroup"] label span { color:rgba(232,232,248,0.85) !important; }
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
 def format_ollama_error(exc, detail="", model=""):
-    message = detail or str(exc)
+    message = (detail or str(exc) or "").strip()
+
+    # Ollama often returns JSON error payloads; surface the nested message when present.
+    if message.startswith("{"):
+        try:
+            parsed = json.loads(message)
+            if isinstance(parsed, dict) and parsed.get("error"):
+                message = str(parsed["error"]).strip()
+        except json.JSONDecodeError:
+            pass
+
+    if not message:
+        message = "No response body was returned by Ollama."
+
     lowered = message.lower()
 
     if "connection refused" in lowered or "failed to establish a new connection" in lowered:
+        extra = ""
+        if IN_CODESPACES and "localhost" in OLLAMA_HOST:
+            extra = (
+                " In Codespaces, localhost points to the container. "
+                "Run Ollama inside the same container or set OLLAMA_HOST to a reachable Ollama URL."
+            )
+        elif IN_STREAMLIT_CLOUD and "localhost" in OLLAMA_HOST:
+            extra = (
+                " On Streamlit Cloud, localhost points to the app container. "
+                "Set OLLAMA_HOST to a hosted Ollama API URL (for example https://api.ollama.com) "
+                "and provide OLLAMA_API_KEY in Streamlit secrets."
+            )
         return (
-            f"Ollama server is not reachable at {OLLAMA_HOST}. "
+            f"Ollama server is not reachable at {OLLAMA_BASE_URL}. "
             "Start Ollama and make sure the local server is running."
+            f"{extra}"
         )
 
     if "timed out" in lowered:
@@ -258,13 +415,33 @@ def format_ollama_error(exc, detail="", model=""):
             "Try a smaller model or retry once the server is responsive."
         )
 
+    if "403" in lowered or "forbidden" in lowered:
+        return (
+            "Ollama rejected the request (403 Forbidden). "
+            "Verify OLLAMA_API_KEY is valid for this endpoint and model."
+        )
+
+    if "404" in lowered:
+        return (
+            f"Ollama endpoint returned 404 at {OLLAMA_BASE_URL}/api/generate. "
+            "Check OLLAMA_HOST and ensure it points to an Ollama-compatible API base URL."
+        )
+
+    if "500" in lowered or "internal server error" in lowered:
+        model_part = f" '{model}'" if model else ""
+        return (
+            f"Ollama server returned an internal error while using model{model_part}. "
+            "Retry with a different model or try again shortly."
+        )
+
     if "not found" in lowered and model:
         return (
             f"Ollama model '{model}' is not available locally. "
             f"Run `ollama pull {model}` and try again."
         )
 
-    return f"Ollama request failed: {message}"
+    model_part = f", model='{model}'" if model else ""
+    return f"Ollama request failed (host={OLLAMA_BASE_URL}{model_part}): {message}"
 
 def ollama_generate(prompt, model, images=None):
     payload = {
@@ -275,16 +452,31 @@ def ollama_generate(prompt, model, images=None):
     if images:
         payload["images"] = images
 
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "MindAI/1.0 (+https://streamlit.io)",
+    }
+    if OLLAMA_API_KEY:
+        headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
+
     request = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/generate",
+        f"{OLLAMA_BASE_URL}/api/generate",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
 
     try:
         with urllib.request.urlopen(request, timeout=180) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            raw_body = response.read().decode("utf-8", errors="replace")
+            try:
+                body = json.loads(raw_body)
+            except json.JSONDecodeError as exc:
+                preview = raw_body[:300] if raw_body else "<empty body>"
+                raise RuntimeError(
+                    f"Ollama returned a non-JSON response from {OLLAMA_BASE_URL}/api/generate: {preview}"
+                ) from exc
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(format_ollama_error(exc, detail, model)) from exc
@@ -303,15 +495,26 @@ def gemini(prompt, system=""):
 def gemini_vision(image, prompt):
     if not VISION_MODEL:
         raise RuntimeError(
-            "No Ollama vision model is configured. Set OLLAMA_VISION_MODEL in .env "
-            "to a local multimodal model such as llava."
+            "No Ollama vision model is configured. Set OLLAMA_VISION_MODEL in "
+            f"{ENV_PATH} to a local multimodal model such as llava."
         )
 
     import io
     buf = io.BytesIO()
     image.save(buf, format="JPEG")
     encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return ollama_generate(prompt, VISION_MODEL, images=[encoded])
+    try:
+        return ollama_generate(prompt, VISION_MODEL, images=[encoded])
+    except RuntimeError as exc:
+        message = str(exc)
+        lowered = message.lower()
+        if "404" in lowered or "403" in lowered or "internal error" in lowered or "500" in lowered:
+            raise RuntimeError(
+                f"Vision model '{VISION_MODEL}' is currently unavailable on {OLLAMA_BASE_URL}. "
+                "Use another vision model in OLLAMA_VISION_MODEL or switch to a local Ollama vision setup. "
+                f"Original error: {message}"
+            ) from exc
+        raise
 
 def extract_pdf(f):
     r = PyPDF2.PdfReader(f)
@@ -604,7 +807,12 @@ Rules:
 
     col_input, col_btn = st.columns([5,1])
     with col_input:
-        prompt = st.text_input("", placeholder="Type your question here...", label_visibility="collapsed", key="chat_input")
+        prompt = st.text_input(
+            "Chat message",
+            placeholder="Type your question here...",
+            label_visibility="collapsed",
+            key="chat_input"
+        )
     with col_btn:
         send = st.button("Send →", key="send_btn")
 

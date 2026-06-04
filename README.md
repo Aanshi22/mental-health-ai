@@ -62,11 +62,14 @@ Create a `.env` file in the project root:
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=codellama:latest
 OLLAMA_VISION_MODEL=llava
+OLLAMA_API_KEY=
 ```
 
 Notes:
 
 - `OLLAMA_HOST` defaults to `http://localhost:11434` if not set.
+- `OLLAMA_HOST` can be local or deployed (e.g. `https://your-ollama.example.com` or `https://your-ollama.example.com/api`).
+- `OLLAMA_API_KEY` is optional for hosted endpoints that require Bearer authentication.
 - `OLLAMA_MODEL` is used for text features.
 - `OLLAMA_VISION_MODEL` is required for Image Analysis.
 
