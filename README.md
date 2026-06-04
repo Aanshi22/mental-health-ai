@@ -106,3 +106,5 @@ Then open the local URL shown in terminal (usually `http://localhost:8501` or ne
 ## Disclaimer
 
 This project is for research and informational purposes only. It is not a medical diagnosis tool and does not replace professional mental health care.
+
+try: https://mental-health-ai-r24azkuj4m5bt2zoqme6wb.streamlit.app/
